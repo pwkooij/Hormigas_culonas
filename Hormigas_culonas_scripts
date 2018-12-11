@@ -1,0 +1,68 @@
+#######################################
+# Removing sequences > 0.99 identical #
+#######################################
+
+#Run USEARCH to remove sequences more then 99% identical so only unique sequences remain
+
+usearch9.0.2132_i86osx32 -cluster_fast all_sequences.fasta -id 0.99 -centroids raw.fasta
+
+#######################################
+# Determining optimum PASTA alignment #
+#######################################
+
+#Create 'dirty' alignment with mafft-linsi
+
+mafft --thread 8 raw.fasta > raw.MAFFT.fasta
+
+#Run PASTA with increasing maximum subproblem size, ranging from 5-100 with steps of 5 followed by 3 steps of 25 to a maximum of 175
+
+run_pasta.py -i raw.fasta --max-mem-mb=55000 --num-cpus=8 --max-subproblem-frac=0 --max-subproblem-size=5 -j raw_max-subproblem_5
+
+#Test the quality of different PASTA alignments using FASTSP with the 'dirty' MAFFT alignment as reference
+
+java -jar FastSP.jar -r raw.MAFFT.fasta -e raw_max-subproblem_5.marker001.raw.aln -o raw_max-subproblem_5.txt
+
+############################################################
+# Rerun PASTA with manually optimised best PASTA alignment #
+############################################################
+
+#Run PASTA with --aligned function, and 10 iterations
+
+run_pasta.py -i optimised_alignment.fasta --aligned --max-mem-mb=55000 --num-cpus=8 --max-subproblem-frac=0 --max-subproblem-size=100 --iter-limit=10 -j optimised_alignment_10iter
+
+###############################################################################
+# Estimating best substitution model for each codon position in the alignment #
+###############################################################################
+
+#Run RAxML to split sequences in files for each codon position
+#Create codon.txt with following lines:
+	#DNA, codon1ps = 1-1096\3
+	#DNA, codon2ps = 2-1097\3
+	#DNA, codon3ps = 3-1098\3
+
+raxmlHPC-PTHREADS-SSE3 -s optimised_alignment.fasta -f s -q codon.txt -n optimised_alignment_splitcodons.fasta -m GTRGAMMAI
+
+#Estimate best substitution model for each codon position file using JModelTest2
+java -jar jModelTest.jar -g 4 -i -f -AIC -BIC -a -tr 8 -d optimised_alignment.fasta.codon1ps.phy -o optimised_alignment.fasta.codon1ps.jmodeltest.out
+java -jar jModelTest.jar -g 4 -i -f -AIC -BIC -a -tr 8 -d optimised_alignment.fasta.codon2ps.phy -o optimised_alignment.fasta.codon2ps.jmodeltest.out
+java -jar jModelTest.jar -g 4 -i -f -AIC -BIC -a -tr 8 -d optimised_alignment.fasta.codon3ps.phy -o optimised_alignment.fasta.codon3ps.jmodeltest.out
+
+################################################################
+# Run RAxML with best codon position-based substitution models #
+################################################################
+
+#Running RAxML using codon position partitions 
+#Using previously created codon.txt with following lines:
+	#DNA, codon1ps = 1-1096\3
+	#DNA, codon2ps = 2-1097\3
+	#DNA, codon3ps = 3-1098\3
+
+raxmlHPC-PTHREADS-SSE3 -T 8 -f a -m GTRGAMMAI -p 12345 -x 12345 -q codon.txt -s optimised_alignment.fasta -n optimised_alignment.tree -N autoMRE
+
+##################################################################
+# Run MrBayes with best codon position-based substitution models #
+##################################################################
+
+#Run MrBayes with the multi-thread version of the program
+#The file optimised_alignment_mrbayes.nex is available separately
+mpirun -np 20 mbpar optimised_alignment_mrbayes.nex > log.txt
